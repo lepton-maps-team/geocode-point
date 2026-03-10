@@ -1,7 +1,5 @@
 # Geocoding Marker
 
-Standalone public map app extracted from `admin-control-plane` for:
-
 - Satellite-only Google map
 - Places API autocomplete
 - Places API details
