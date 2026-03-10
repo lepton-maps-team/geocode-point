@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useDebouncedValue } from "./hooks/useDebouncedValue";
+import booleanPointInPolygon from "@turf/boolean-point-in-polygon";
+import { point } from "@turf/helpers";
 import {
   parseGoogleGeocodeResults,
   type ParsedGeocode,
@@ -38,19 +40,14 @@ type HomeGeocodeCache = {
   data: ParsedGeocode;
 };
 
-type GeoPoint = [number, number];
-type GeoRing = GeoPoint[];
-type GeoPolygon = GeoRing[];
-type GeoMultiPolygon = GeoPolygon[];
-
 type IndiaBoundaryGeometry =
   | {
       type: "Polygon";
-      coordinates: GeoPolygon;
+      coordinates: number[][][];
     }
   | {
       type: "MultiPolygon";
-      coordinates: GeoMultiPolygon;
+      coordinates: number[][][][];
     };
 
 type IndiaBoundaryFeature = {
@@ -85,58 +82,18 @@ function isSameCoordinate(a: Coordinates, b: Coordinates, epsilon = 1e-6) {
   );
 }
 
-function isPointInRing(point: GeoPoint, ring: GeoRing) {
-  const [x, y] = point;
-  let inside = false;
-
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const [xi, yi] = ring[i];
-    const [xj, yj] = ring[j];
-
-    const intersects =
-      yi > y !== yj > y &&
-      x < ((xj - xi) * (y - yi)) / (yj - yi || Number.EPSILON) + xi;
-    if (intersects) inside = !inside;
-  }
-
-  return inside;
-}
-
-function isPointInPolygon(point: GeoPoint, polygon: GeoPolygon) {
-  if (!polygon.length) return false;
-  if (!isPointInRing(point, polygon[0])) return false;
-
-  // Exclude holes
-  for (let i = 1; i < polygon.length; i += 1) {
-    if (isPointInRing(point, polygon[i])) return false;
-  }
-
-  return true;
-}
-
 function isWithinIndia(
   position: Coordinates,
   boundary: IndiaBoundaryFeatureCollection | null,
 ) {
   if (!boundary?.features?.length) return false;
 
-  const point: GeoPoint = [position.lng, position.lat];
+  const candidatePoint = point([position.lng, position.lat]);
 
   return boundary.features.some((feature) => {
-    const geometry = feature.geometry;
-    if (!geometry) return false;
-
-    if (geometry.type === "Polygon") {
-      return isPointInPolygon(point, geometry.coordinates);
-    }
-
-    if (geometry.type === "MultiPolygon") {
-      return geometry.coordinates.some((polygon) =>
-        isPointInPolygon(point, polygon),
-      );
-    }
-
-    return false;
+    return booleanPointInPolygon(candidatePoint, feature as any, {
+      ignoreBoundary: false,
+    });
   });
 }
 
@@ -783,14 +740,18 @@ export default function App() {
         </div> */}
       </header>
 
+      {interactionError && (
+        <div
+          className="toast toast-warn"
+          id="interaction-error-toast"
+          role="status"
+          aria-live="polite">
+          {interactionError}
+        </div>
+      )}
       {loadError && (
         <div className="alert-bar error" id="load-error">
           {loadError}
-        </div>
-      )}
-      {interactionError && (
-        <div className="alert-bar warn" id="interaction-error">
-          {interactionError}
         </div>
       )}
 
