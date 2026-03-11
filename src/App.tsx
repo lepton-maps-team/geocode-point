@@ -395,8 +395,8 @@ export default function App() {
         const marker = new g.maps.Marker({
           position: DEFAULT_CENTER,
           map,
-          draggable: true,
-          title: "Drag marker to geocode a location",
+          draggable: false,
+          title: "Marker at map center",
         });
 
         const geocoder = new g.maps.Geocoder();
@@ -404,33 +404,16 @@ export default function App() {
         mapInstanceRef.current = map;
         markerRef.current = marker;
         geocoderRef.current = geocoder;
-
         listeners.push(
-          map.addListener("click", (event: any) => {
-            const lat = event.latLng?.lat?.();
-            const lng = event.latLng?.lng?.();
-            if (lat == null || lng == null) return;
+          map.addListener("idle", () => {
+            const center = map.getCenter();
+            if (!center) return;
+            const lat = center.lat();
+            const lng = center.lng();
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
             marker.setPosition({ lat, lng });
             setMarkerPosition({ lat, lng });
             setInteractionError(null);
-          }),
-        );
-
-        listeners.push(
-          marker.addListener("drag", (event: any) => {
-            const lat = event.latLng?.lat?.();
-            const lng = event.latLng?.lng?.();
-            if (lat == null || lng == null) return;
-            setMarkerPosition({ lat, lng });
-          }),
-        );
-
-        listeners.push(
-          marker.addListener("dragend", (event: any) => {
-            const lat = event.latLng?.lat?.();
-            const lng = event.latLng?.lng?.();
-            if (lat == null || lng == null) return;
-            setMarkerPosition({ lat, lng });
           }),
         );
 
