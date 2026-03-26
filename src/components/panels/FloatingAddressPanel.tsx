@@ -7,6 +7,7 @@ import IconCopy from "../icons/IconCopy";
 
 type Props = {
   geocodeData: ParsedGeocode | null;
+  markerPosition: { lat: number; lng: number };
   isGeocoding: boolean;
   hasPendingGeocode: boolean;
   interactionError: string | null;
@@ -16,6 +17,7 @@ type Props = {
 
 export default function FloatingAddressPanel({
   geocodeData,
+  markerPosition,
   isGeocoding,
   hasPendingGeocode,
   interactionError,
@@ -54,6 +56,12 @@ export default function FloatingAddressPanel({
       : isEmpty
         ? "Address will appear here after confirmation."
         : "Address resolved for the current marker position.";
+  const latText = Number.isFinite(markerPosition.lat)
+    ? markerPosition.lat.toFixed(6)
+    : "—";
+  const lngText = Number.isFinite(markerPosition.lng)
+    ? markerPosition.lng.toFixed(6)
+    : "—";
 
   useEffect(() => {
     if (!copiedRecently) return;
@@ -121,6 +129,10 @@ export default function FloatingAddressPanel({
           </div>
         </div>
         <div className="floating-address-hint">{helperText}</div>
+        <div className="floating-address-coords">
+          <span>Lat: {latText}</span>
+          <span>Lng: {lngText}</span>
+        </div>
       </div>
 
       <div className="floating-address-actions">

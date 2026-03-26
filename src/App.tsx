@@ -286,7 +286,6 @@ export default function App() {
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
-  const greyDotIconRef = useRef<any>(null);
   const confirmedMarkerRef = useRef<any>(null);
   const geocoderRef = useRef<any>(null);
 
@@ -470,16 +469,6 @@ export default function App() {
           zIndex: 11,
         });
 
-        const greyDotIcon = {
-          path: g.maps.SymbolPath.CIRCLE,
-          fillColor: "#9ca3af", // grey
-          fillOpacity: 1,
-          strokeColor: "#ffffff",
-          strokeWeight: 2,
-          scale: 7,
-        };
-        greyDotIconRef.current = greyDotIcon;
-
         const confirmedMarker = new g.maps.Marker({
           position: DEFAULT_CENTER,
           map,
@@ -496,6 +485,10 @@ export default function App() {
         markerRef.current = pendingMarker;
         confirmedMarkerRef.current = confirmedMarker;
         geocoderRef.current = geocoder;
+
+        // Ensure startup visibility is deterministic: only current marker is shown.
+        pendingMarker.setVisible(true);
+        confirmedMarker.setVisible(false);
 
         listeners.push(
           map.addListener("dragstart", () => setInteracting(true)),
@@ -734,16 +727,11 @@ export default function App() {
       );
     }
 
-    // While pending, switch the moving marker to the grey dot.
+    // While pending, hide the moving marker and use a fixed center overlay dot.
     const pendingMarker = markerRef.current;
     if (pendingMarker) {
-      const greyDotIcon = greyDotIconRef.current;
-      if (hasPendingGeocode && greyDotIcon) {
-        pendingMarker.setIcon(greyDotIcon);
-      } else {
-        // null restores Google default red marker icon.
-        pendingMarker.setIcon(null);
-      }
+      pendingMarker.setVisible(!hasPendingGeocode);
+      pendingMarker.setIcon(null);
     }
   }, [hasPendingGeocode]);
 
@@ -1016,7 +1004,10 @@ export default function App() {
             onSuggestionSelect={handleSuggestionSelect}
           />
 
-          <CrosshairOverlay isActive={isMapInteracting} />
+          <CrosshairOverlay
+            isActive={isMapInteracting}
+            showPendingDot={hasPendingGeocode}
+          />
 
           <MapControlsPanel
             onZoomIn={zoomIn}
@@ -1026,6 +1017,7 @@ export default function App() {
 
           <FloatingAddressPanel
             geocodeData={geocodeData}
+            markerPosition={markerPosition}
             isGeocoding={isGeocoding}
             hasPendingGeocode={hasPendingGeocode}
             interactionError={interactionError}
