@@ -809,7 +809,7 @@ body {
   left: 16px;
   bottom: 25px;
   width: min(390px, calc(100% - 102px));
-  height: 188px;
+  height: 192px;
   z-index: 80;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--border-subtle);
@@ -915,6 +915,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  overflow: hidden;
 }
 
 .floating-address-text {
@@ -927,8 +928,8 @@ body {
   /* Keep dialog height stable while allowing more text. */
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  line-clamp: 4;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
   overflow: hidden;
   transition: opacity 0.18s cubic-bezier(0.25, 1, 0.5, 1);
 }
@@ -942,34 +943,8 @@ body {
   font-size: 11.5px;
   line-height: 1.35;
   color: var(--text-secondary);
-  min-height: 15px;
+  min-height: 16px;
   transition: color 0.2s cubic-bezier(0.25, 1, 0.5, 1);
-}
-
-.floating-address-error {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: transparent;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 6px 8px;
-  line-height: 1.3;
-  min-height: 29px;
-  opacity: 0;
-  transition:
-    opacity 0.16s cubic-bezier(0.25, 1, 0.5, 1),
-    color 0.16s cubic-bezier(0.25, 1, 0.5, 1),
-    border-color 0.16s cubic-bezier(0.25, 1, 0.5, 1),
-    background-color 0.16s cubic-bezier(0.25, 1, 0.5, 1);
-}
-
-.floating-address-error.visible {
-  color: #991b1b;
-  background: rgba(220, 38, 38, 0.09);
-  border-color: rgba(220, 38, 38, 0.28);
-  opacity: 1;
-  animation: floating-address-error-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .floating-address-copy-slot {
@@ -1036,6 +1011,7 @@ body {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+  flex-shrink: 0;
 }
 
 @media (max-width: 520px) {
@@ -1053,17 +1029,6 @@ body {
   from {
     opacity: 0;
     transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes floating-address-error-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -1095,7 +1060,6 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .floating-address-dialog,
-  .floating-address-error,
   .floating-address-state {
     animation: none !important;
   }

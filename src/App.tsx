@@ -34,7 +34,6 @@ const DEFAULT_CENTER: Coordinates = { lat: 22.5937, lng: 78.9629 };
 const DEFAULT_ZOOM = 5;
 const FOCUS_ZOOM = 20;
 const COORDINATE_REGEX = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/;
-const INDIA_BOUNDARY_URL = "/india.geojson";
 const STATE_BOUNDARY_DIR_URL = "/states/";
 const HOME_GEOCODE_CACHE_KEY = "geocoding-marker:home-geocode:v1";
 const HOME_GEOCODE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -295,22 +294,12 @@ export default function App() {
       const stateNameRaw = getStateNameFromUrl();
       const stateName = stateNameRaw ? normalizeStateName(stateNameRaw) : null;
 
-      // Default: whole India.
+      // state_name is mandatory: show dialog when missing.
       if (!stateName) {
-        setBoundaryLabel("India");
+        setBoundaryLabel("state");
+        setIndiaBoundary(null);
         setHomePosition(DEFAULT_CENTER);
-        try {
-          const response = await fetch(INDIA_BOUNDARY_URL);
-          if (!response.ok) throw new Error("Unable to load India boundary data.");
-          const data = (await response.json()) as IndiaBoundaryFeatureCollection;
-          if (!isMounted) return;
-          setIndiaBoundary(data);
-        } catch {
-          if (!isMounted) return;
-          setLoadError(
-            "India boundary data could not be loaded. Geocoding restriction cannot be applied.",
-          );
-        }
+        setIsStateMandatoryModalOpen(true);
         return;
       }
 

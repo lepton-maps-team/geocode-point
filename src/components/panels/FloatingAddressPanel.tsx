@@ -121,12 +121,6 @@ export default function FloatingAddressPanel({
           </div>
         </div>
         <div className="floating-address-hint">{helperText}</div>
-        <div
-          className={`floating-address-error${interactionError ? " visible" : ""}`}
-          role={interactionError ? "alert" : undefined}
-          aria-live={interactionError ? "assertive" : undefined}>
-          {interactionError || ""}
-        </div>
       </div>
 
       <div className="floating-address-actions">
