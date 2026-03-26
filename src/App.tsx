@@ -12,6 +12,11 @@ import {
   searchFromGooglePlaces,
   type PlaceSuggestion,
 } from "./lib/googlePlaces";
+import CrosshairOverlay from "./components/panels/CrosshairOverlay";
+import FloatingAddressPanel from "./components/panels/FloatingAddressPanel";
+import FloatingSearchPanel from "./components/panels/FloatingSearchPanel";
+import MapControlsPanel from "./components/panels/MapControlsPanel";
+import StateMandatoryModal from "./components/panels/StateMandatoryModal";
 
 type Coordinates = {
   lat: number;
@@ -28,11 +33,41 @@ const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as
 const DEFAULT_CENTER: Coordinates = { lat: 22.5937, lng: 78.9629 };
 const DEFAULT_ZOOM = 5;
 const FOCUS_ZOOM = 20;
-const GEO_DEBOUNCE_MS = 450;
 const COORDINATE_REGEX = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/;
 const INDIA_BOUNDARY_URL = "/india.geojson";
+const STATE_BOUNDARY_DIR_URL = "/states/";
 const HOME_GEOCODE_CACHE_KEY = "geocoding-marker:home-geocode:v1";
 const HOME_GEOCODE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function getStateNameFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("state_name");
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStateName(input: string) {
+  return input
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function stateNameToSlug(stateName: string) {
+  const normalized = normalizeStateName(stateName);
+  // Convert spaces to underscores and strip any remaining unsafe chars.
+  return normalized
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
 
 type HomeGeocodeCache = {
   savedAt: number;
@@ -42,17 +77,18 @@ type HomeGeocodeCache = {
 
 type IndiaBoundaryGeometry =
   | {
-      type: "Polygon";
-      coordinates: number[][][];
-    }
+    type: "Polygon";
+    coordinates: number[][][];
+  }
   | {
-      type: "MultiPolygon";
-      coordinates: number[][][][];
-    };
+    type: "MultiPolygon";
+    coordinates: number[][][][];
+  };
 
 type IndiaBoundaryFeature = {
   type: "Feature";
   geometry: IndiaBoundaryGeometry;
+  properties?: Record<string, unknown>;
 };
 
 type IndiaBoundaryFeatureCollection = {
@@ -60,8 +96,66 @@ type IndiaBoundaryFeatureCollection = {
   features: IndiaBoundaryFeature[];
 };
 
-function formatCoordinate(value: number) {
-  return value.toFixed(7);
+type LatLngBounds = {
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+};
+
+function computeLatLngBoundsFromGeoJson(
+  boundary: IndiaBoundaryFeatureCollection,
+): LatLngBounds | null {
+  let minLat = Number.POSITIVE_INFINITY;
+  let maxLat = Number.NEGATIVE_INFINITY;
+  let minLng = Number.POSITIVE_INFINITY;
+  let maxLng = Number.NEGATIVE_INFINITY;
+
+  const update = (lng: number, lat: number) => {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    minLat = Math.min(minLat, lat);
+    maxLat = Math.max(maxLat, lat);
+    minLng = Math.min(minLng, lng);
+    maxLng = Math.max(maxLng, lng);
+  };
+
+  for (const feature of boundary.features || []) {
+    const geom: any = feature.geometry;
+    if (!geom) continue;
+
+    // Polygon: coordinates = number[][][] (rings -> points -> [lng,lat])
+    if (geom.type === "Polygon" && Array.isArray(geom.coordinates)) {
+      for (const ring of geom.coordinates) {
+        for (const coord of ring) {
+          const [lng, lat] = coord as [number, number];
+          update(lng, lat);
+        }
+      }
+    }
+
+    // MultiPolygon: coordinates = number[][][][] (polygons -> rings -> points -> [lng,lat])
+    if (geom.type === "MultiPolygon" && Array.isArray(geom.coordinates)) {
+      for (const poly of geom.coordinates) {
+        for (const ring of poly) {
+          for (const coord of ring) {
+            const [lng, lat] = coord as [number, number];
+            update(lng, lat);
+          }
+        }
+      }
+    }
+  }
+
+  if (
+    !Number.isFinite(minLat) ||
+    !Number.isFinite(maxLat) ||
+    !Number.isFinite(minLng) ||
+    !Number.isFinite(maxLng)
+  ) {
+    return null;
+  }
+
+  return { minLat, maxLat, minLng, maxLng };
 }
 
 function parseCoordinateInput(value: string): Coordinates | null {
@@ -158,166 +252,12 @@ function getMaxAllowedZoom(
   });
 }
 
-async function getCurrentLocation(): Promise<Coordinates> {
-  return new Promise((resolve, reject) => {
-    if (!("geolocation" in navigator)) {
-      reject(new Error("Geolocation is not supported by this browser."));
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        resolve({
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-        });
-      },
-      (err) => reject(err),
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 },
-    );
-  });
-}
-
-function IconSearch() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  );
-}
-
-function IconZoomIn() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-      <line x1="11" y1="8" x2="11" y2="14" />
-      <line x1="8" y1="11" x2="14" y2="11" />
-    </svg>
-  );
-}
-
-function IconZoomOut() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-      <line x1="8" y1="11" x2="14" y2="11" />
-    </svg>
-  );
-}
-
-function IconHome() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round">
-      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-      <polyline points="9 22 9 12 15 12 15 22" />
-    </svg>
-  );
-}
-
-function IconMapPin() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round">
-      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
-      <circle cx="12" cy="10" r="3" />
-    </svg>
-  );
-}
-
-function IconGlobe() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <line x1="2" y1="12" x2="22" y2="12" />
-      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
-    </svg>
-  );
-}
-
-function IconX() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round">
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
-  );
-}
-
-function IconLocate() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <circle cx="12" cy="12" r="3" />
-      <line x1="12" y1="2" x2="12" y2="5" />
-      <line x1="12" y1="19" x2="12" y2="22" />
-      <line x1="2" y1="12" x2="5" y2="12" />
-      <line x1="19" y1="12" x2="22" y2="12" />
-    </svg>
-  );
-}
-
 export default function App() {
   const mapRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<any>(null);
   const markerRef = useRef<any>(null);
+  const greyDotIconRef = useRef<any>(null);
+  const confirmedMarkerRef = useRef<any>(null);
   const geocoderRef = useRef<any>(null);
 
   const [markerPosition, setMarkerPosition] =
@@ -325,38 +265,105 @@ export default function App() {
   const [geocodeData, setGeocodeData] = useState<ParsedGeocode | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
   const [isGeocoding, setIsGeocoding] = useState(false);
+  const [isMapInteracting, setIsMapInteracting] = useState(false);
+  const [hasInitializedGeocode, setHasInitializedGeocode] = useState(false);
+  const [pendingGeocodePosition, setPendingGeocodePosition] = useState<
+    Coordinates | null
+  >(null);
+  const [hasPendingGeocode, setHasPendingGeocode] = useState(false);
+  const confirmedGeocodePositionRef = useRef<Coordinates>(DEFAULT_CENTER);
+  const pendingGeocodePositionRef = useRef<Coordinates | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [suggestions, setSuggestions] = useState<SearchSuggestion[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [interactionError, setInteractionError] = useState<string | null>(null);
-  const [isLocating, setIsLocating] = useState(false);
   const [indiaBoundary, setIndiaBoundary] =
     useState<IndiaBoundaryFeatureCollection | null>(null);
+  const [boundaryLabel, setBoundaryLabel] = useState<string>("India");
+  const [homePosition, setHomePosition] = useState<Coordinates>(DEFAULT_CENTER);
+  const [isStateMandatoryModalOpen, setIsStateMandatoryModalOpen] = useState(
+    false,
+  );
 
-  const debouncedPosition = useDebouncedValue(markerPosition, GEO_DEBOUNCE_MS);
   const debouncedSearchInput = useDebouncedValue(searchInput, 350);
 
   useEffect(() => {
     let isMounted = true;
 
-    fetch(INDIA_BOUNDARY_URL)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error("Unable to load India boundary data.");
+    const run = async () => {
+      const stateNameRaw = getStateNameFromUrl();
+      const stateName = stateNameRaw ? normalizeStateName(stateNameRaw) : null;
+
+      // Default: whole India.
+      if (!stateName) {
+        setBoundaryLabel("India");
+        setHomePosition(DEFAULT_CENTER);
+        try {
+          const response = await fetch(INDIA_BOUNDARY_URL);
+          if (!response.ok) throw new Error("Unable to load India boundary data.");
+          const data = (await response.json()) as IndiaBoundaryFeatureCollection;
+          if (!isMounted) return;
+          setIndiaBoundary(data);
+        } catch {
+          if (!isMounted) return;
+          setLoadError(
+            "India boundary data could not be loaded. Geocoding restriction cannot be applied.",
+          );
         }
-        return response.json() as Promise<IndiaBoundaryFeatureCollection>;
-      })
-      .then((data) => {
+        return;
+      }
+
+      // State-specific boundary (pre-split in public/states/<slug>.geojson).
+      const stateSlug = stateNameToSlug(stateNameRaw ?? stateName);
+      const stateUrl = `${STATE_BOUNDARY_DIR_URL}${encodeURIComponent(
+        stateSlug,
+      )}.geojson`;
+
+      try {
+        const response = await fetch(stateUrl);
+        if (!response.ok) throw new Error("State boundary not found.");
+
+        const data = (await response.json()) as IndiaBoundaryFeatureCollection;
         if (!isMounted) return;
-        setIndiaBoundary(data);
-      })
-      .catch(() => {
+
+        const features = (data.features || []) as IndiaBoundaryFeature[];
+        if (!features.length) {
+          setBoundaryLabel(stateNameRaw || "state");
+          setIndiaBoundary(null);
+          setIsStateMandatoryModalOpen(true);
+          return;
+        }
+
+        const firstName =
+          (features[0].properties as any)?.name || stateNameRaw || "state";
+        setBoundaryLabel(firstName);
+        setIndiaBoundary({
+          type: "FeatureCollection",
+          features,
+        });
+
+        const bounds = computeLatLngBoundsFromGeoJson({
+          type: "FeatureCollection",
+          features,
+        });
+        if (bounds) {
+          setHomePosition({
+            lat: (bounds.minLat + bounds.maxLat) / 2,
+            lng: (bounds.minLng + bounds.maxLng) / 2,
+          });
+        } else {
+          setHomePosition(DEFAULT_CENTER);
+        }
+      } catch {
         if (!isMounted) return;
-        setLoadError(
-          "India boundary data could not be loaded. Geocoding restriction cannot be applied.",
-        );
-      });
+        setBoundaryLabel(stateNameRaw || "state");
+        setIndiaBoundary(null);
+        setIsStateMandatoryModalOpen(true);
+      }
+    };
+
+    void run();
 
     return () => {
       isMounted = false;
@@ -373,6 +380,13 @@ export default function App() {
 
     let isMounted = true;
     const listeners: any[] = [];
+    const interactingRef = { current: false };
+
+    const setInteracting = (next: boolean) => {
+      if (interactingRef.current === next) return;
+      interactingRef.current = next;
+      setIsMapInteracting(next);
+    };
 
     loadGoogleMaps(GOOGLE_MAPS_KEY)
       .then(() => {
@@ -392,26 +406,57 @@ export default function App() {
           keyboardShortcuts: false,
         });
 
-        const marker = new g.maps.Marker({
+        const pendingMarker = new g.maps.Marker({
           position: DEFAULT_CENTER,
           map,
           draggable: false,
-          title: "Marker at map center",
+          title: "Current marker (pending)",
+          zIndex: 11,
+        });
+
+        const greyDotIcon = {
+          path: g.maps.SymbolPath.CIRCLE,
+          fillColor: "#9ca3af", // grey
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+          scale: 7,
+        };
+        greyDotIconRef.current = greyDotIcon;
+
+        const confirmedMarker = new g.maps.Marker({
+          position: DEFAULT_CENTER,
+          map,
+          draggable: false,
+          title: "Previous marker (confirmed)",
+          visible: false, // Shown only while there's a pending marker.
+          zIndex: 10,
+          // Keep the original Google marker style for the confirmed position.
         });
 
         const geocoder = new g.maps.Geocoder();
 
         mapInstanceRef.current = map;
-        markerRef.current = marker;
+        markerRef.current = pendingMarker;
+        confirmedMarkerRef.current = confirmedMarker;
         geocoderRef.current = geocoder;
+
+        listeners.push(
+          map.addListener("dragstart", () => setInteracting(true)),
+        );
+        listeners.push(map.addListener("zoom_changed", () => setInteracting(true)));
+        listeners.push(
+          map.addListener("center_changed", () => setInteracting(true)),
+        );
         listeners.push(
           map.addListener("idle", () => {
+            setInteracting(false);
             const center = map.getCenter();
             if (!center) return;
             const lat = center.lat();
             const lng = center.lng();
             if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
-            marker.setPosition({ lat, lng });
+            pendingMarker.setPosition({ lat, lng });
             setMarkerPosition({ lat, lng });
             setInteractionError(null);
           }),
@@ -453,8 +498,11 @@ export default function App() {
 
     let isCancelled = false;
     setIsSearching(true);
+    const searchBounds = indiaBoundary
+      ? computeLatLngBoundsFromGeoJson(indiaBoundary)
+      : null;
 
-    searchFromGooglePlaces(trimmedInput, GOOGLE_MAPS_KEY)
+    searchFromGooglePlaces(trimmedInput, GOOGLE_MAPS_KEY, searchBounds)
       .then((results) => {
         if (!isCancelled) setSuggestions(results);
       })
@@ -471,54 +519,268 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [debouncedSearchInput, isMapReady]);
+  }, [debouncedSearchInput, isMapReady, indiaBoundary]);
 
   useEffect(() => {
-    if (!isMapReady || !geocoderRef.current || !indiaBoundary) return;
+    pendingGeocodePositionRef.current = pendingGeocodePosition;
+  }, [pendingGeocodePosition]);
 
-    if (!isWithinIndia(debouncedPosition, indiaBoundary)) {
-      setIsGeocoding(false);
+  const reverseGeocodeAtPosition = async (
+    position: Coordinates,
+  ): Promise<ParsedGeocode> => {
+    if (!geocoderRef.current) {
+      throw new Error("Geocoder is not ready.");
+    }
+
+    const isHomeMarkerPosition = isSameCoordinate(position, DEFAULT_CENTER);
+    if (isHomeMarkerPosition) {
+      const cachedHomeGeocode = readHomeGeocodeCache();
+      if (cachedHomeGeocode) return cachedHomeGeocode;
+    }
+
+    return new Promise<ParsedGeocode>((resolve, reject) => {
+      geocoderRef.current.geocode(
+        { location: { lat: position.lat, lng: position.lng } },
+        (results: unknown[], status: string) => {
+          if (status !== "OK" || !results) {
+            reject(
+              new Error(
+                "Reverse geocoding failed. Try moving the marker again.",
+              ),
+            );
+            return;
+          }
+
+          const parsedData = parseGoogleGeocodeResults(results);
+          if (isHomeMarkerPosition) {
+            writeHomeGeocodeCache(parsedData);
+          }
+          resolve(parsedData);
+        },
+      );
+    });
+  };
+
+  // One-time initial reverse-geocode so the toolbar starts populated.
+  useEffect(() => {
+    if (!isMapReady || !indiaBoundary || hasInitializedGeocode) return;
+
+    const run = async () => {
+      setIsGeocoding(true);
+      setInteractionError(null);
+      try {
+        if (!isWithinIndia(homePosition, indiaBoundary)) {
+          throw new Error(
+            `Geocoding is restricted to ${boundaryLabel} only.`,
+          );
+        }
+
+        const parsed = await reverseGeocodeAtPosition(homePosition);
+        confirmedGeocodePositionRef.current = homePosition;
+        setGeocodeData(parsed);
+      } catch (err: any) {
+        setGeocodeData(null);
+        setInteractionError(err?.message || "Reverse geocoding failed.");
+      } finally {
+        setIsGeocoding(false);
+        setHasInitializedGeocode(true);
+      }
+    };
+
+    void run();
+  }, [
+    isMapReady,
+    indiaBoundary,
+    hasInitializedGeocode,
+    boundaryLabel,
+    homePosition,
+  ]);
+
+  // Fit map + render the selected boundary polygon(s).
+  useEffect(() => {
+    if (!isMapReady || !indiaBoundary) return;
+    if (!mapInstanceRef.current || !(window as any).google) return;
+
+    const map = mapInstanceRef.current;
+    const g: any = (window as any).google;
+
+    const bounds = computeLatLngBoundsFromGeoJson(indiaBoundary);
+    if (bounds) {
+      const latLngBounds = new g.maps.LatLngBounds(
+        new g.maps.LatLng(bounds.minLat, bounds.minLng),
+        new g.maps.LatLng(bounds.maxLat, bounds.maxLng),
+      );
+      map.fitBounds(latLngBounds);
+    }
+
+    // Ensure the marker starts at the state "home" position.
+    map.setCenter(homePosition);
+    map.setZoom(map.getZoom() ?? DEFAULT_ZOOM);
+    if (markerRef.current) {
+      markerRef.current.setPosition(homePosition);
+    }
+    setMarkerPosition(homePosition);
+
+    // Render boundary overlay.
+    try {
+      // Remove any previously rendered geo features.
+      map.data.forEach((f: any) => map.data.remove(f));
+      map.data.addGeoJson(indiaBoundary as any);
+      map.data.setStyle({
+        fillColor: "#6366f1",
+        fillOpacity: 0.12,
+        strokeColor: "#6366f1",
+        strokeOpacity: 0.45,
+        strokeWeight: 2,
+      });
+    } catch {
+      // Ignore rendering errors; geocoding restriction still works.
+    }
+  }, [isMapReady, indiaBoundary, boundaryLabel, homePosition]);
+
+  // When marker moves after initialization, store a "pending" position.
+  // Reverse geocoding runs only when user clicks Confirm.
+  useEffect(() => {
+    if (!isMapReady || !indiaBoundary || !hasInitializedGeocode) return;
+
+    const confirmedPos = confirmedGeocodePositionRef.current;
+
+    if (!isWithinIndia(markerPosition, indiaBoundary)) {
+      setInteractionError(`Geocoding is restricted to ${boundaryLabel} only.`);
       setGeocodeData(null);
-      setInteractionError("Geocoding is restricted to India only.");
+      setHasPendingGeocode(false);
+      setPendingGeocodePosition(null);
       return;
     }
 
-    const isHomeMarkerPosition = isSameCoordinate(
-      debouncedPosition,
-      DEFAULT_CENTER,
-    );
-    if (isHomeMarkerPosition) {
-      const cachedHomeGeocode = readHomeGeocodeCache();
-      if (cachedHomeGeocode) {
-        setGeocodeData(cachedHomeGeocode);
-        setIsGeocoding(false);
-        setInteractionError(null);
-        return;
+    // Clear any restrictions as soon as we're back in bounds.
+    setInteractionError(null);
+
+    // Use a slightly looser epsilon for UI "pending" detection so the button
+    // reliably appears after a visible map move.
+    if (isSameCoordinate(markerPosition, confirmedPos, 1e-5)) {
+      setHasPendingGeocode(false);
+      setPendingGeocodePosition(null);
+      return;
+    }
+
+    setPendingGeocodePosition(markerPosition);
+    setHasPendingGeocode(true);
+  }, [markerPosition, indiaBoundary, isMapReady, hasInitializedGeocode, boundaryLabel]);
+
+  useEffect(() => {
+    if (!confirmedMarkerRef.current) return;
+    confirmedMarkerRef.current.setVisible(hasPendingGeocode);
+    // Keep confirmed marker pinned to the confirmed position while pending.
+    if (hasPendingGeocode) {
+      confirmedMarkerRef.current.setPosition(
+        confirmedGeocodePositionRef.current,
+      );
+    }
+
+    // While pending, switch the moving marker to the grey dot.
+    const pendingMarker = markerRef.current;
+    if (pendingMarker) {
+      const greyDotIcon = greyDotIconRef.current;
+      if (hasPendingGeocode && greyDotIcon) {
+        pendingMarker.setIcon(greyDotIcon);
+      } else {
+        // null restores Google default red marker icon.
+        pendingMarker.setIcon(null);
       }
+    }
+  }, [hasPendingGeocode]);
+
+  const handleConfirmGeocode = async () => {
+    if (!pendingGeocodePositionRef.current || !indiaBoundary || !isMapReady)
+      return;
+    if (isGeocoding) return;
+
+    const positionToConfirm = pendingGeocodePositionRef.current;
+
+    if (!isWithinIndia(positionToConfirm, indiaBoundary)) {
+      setInteractionError(`Geocoding is restricted to ${boundaryLabel} only.`);
+      setGeocodeData(null);
+      setHasPendingGeocode(false);
+      setPendingGeocodePosition(null);
+      return;
     }
 
     setIsGeocoding(true);
     setInteractionError(null);
 
-    geocoderRef.current.geocode(
-      { location: { lat: debouncedPosition.lat, lng: debouncedPosition.lng } },
-      (results: unknown[], status: string) => {
-        setIsGeocoding(false);
-        if (status !== "OK" || !results) {
-          setGeocodeData(null);
-          setInteractionError(
-            "Reverse geocoding failed. Try moving the marker again.",
-          );
-          return;
+    try {
+      const parsed = await reverseGeocodeAtPosition(positionToConfirm);
+
+      // Only apply if the pending position hasn't changed since the click.
+      if (
+        pendingGeocodePositionRef.current &&
+        isSameCoordinate(
+          pendingGeocodePositionRef.current,
+          positionToConfirm,
+          1e-5,
+        )
+      ) {
+        confirmedGeocodePositionRef.current = positionToConfirm;
+        if (confirmedMarkerRef.current) {
+          confirmedMarkerRef.current.setPosition(positionToConfirm);
+          confirmedMarkerRef.current.setVisible(false);
         }
-        const parsedData = parseGoogleGeocodeResults(results);
-        setGeocodeData(parsedData);
-        if (isHomeMarkerPosition) {
-          writeHomeGeocodeCache(parsedData);
+        setGeocodeData(parsed);
+        setHasPendingGeocode(false);
+        setPendingGeocodePosition(null);
+      }
+    } catch (err: any) {
+      if (
+        pendingGeocodePositionRef.current &&
+        isSameCoordinate(
+          pendingGeocodePositionRef.current,
+          positionToConfirm,
+          1e-5,
+        )
+      ) {
+        if (confirmedMarkerRef.current) {
+          // Keep the previous marker visible until the user cancels or moves again.
+          confirmedMarkerRef.current.setVisible(true);
+          confirmedMarkerRef.current.setPosition(confirmedGeocodePositionRef.current);
         }
-      },
-    );
-  }, [debouncedPosition, indiaBoundary, isMapReady]);
+        setGeocodeData(null);
+        setInteractionError(err?.message || "Reverse geocoding failed.");
+        setHasPendingGeocode(false);
+        setPendingGeocodePosition(null);
+      }
+    } finally {
+      setIsGeocoding(false);
+    }
+  };
+
+  const handleCancelGeocode = () => {
+    if (isGeocoding) return;
+    const confirmedPos = confirmedGeocodePositionRef.current;
+
+    // Clear pending state.
+    pendingGeocodePositionRef.current = null;
+    setHasPendingGeocode(false);
+    setPendingGeocodePosition(null);
+
+    setInteractionError(null);
+
+    const map = mapInstanceRef.current;
+    const pendingMarker = markerRef.current;
+    if (map && pendingMarker && confirmedPos) {
+      pendingMarker.setPosition(confirmedPos);
+      map.panTo(confirmedPos);
+      map.setCenter(confirmedPos);
+      setMarkerPosition(confirmedPos);
+    } else {
+      setMarkerPosition(confirmedPos);
+    }
+
+    if (confirmedMarkerRef.current) {
+      confirmedMarkerRef.current.setVisible(false);
+      confirmedMarkerRef.current.setPosition(confirmedPos);
+    }
+  };
 
   const handleSuggestionSelect = async (suggestion: SearchSuggestion) => {
     const map = mapInstanceRef.current;
@@ -532,7 +794,9 @@ export default function App() {
     if (suggestion.coordinates) {
       const { lat, lng } = suggestion.coordinates;
       if (!isWithinIndia({ lat, lng }, indiaBoundary)) {
-        setInteractionError("Selected location is outside India.");
+        setInteractionError(
+          `Selected location is outside ${boundaryLabel}.`,
+        );
         return;
       }
       const g = (window as any).google;
@@ -558,7 +822,7 @@ export default function App() {
       const lat = details.geometry.location.lat;
       const lng = details.geometry.location.lng;
       if (!isWithinIndia({ lat, lng }, indiaBoundary)) {
-        setInteractionError("Selected place is outside India.");
+        setInteractionError(`Selected place is outside ${boundaryLabel}.`);
         return;
       }
 
@@ -585,15 +849,62 @@ export default function App() {
     }
   };
 
-  const resetHome = () => {
+  const resetHome = async () => {
     const map = mapInstanceRef.current;
     const marker = markerRef.current;
     if (!map || !marker) return;
-    map.panTo(DEFAULT_CENTER);
-    map.setZoom(DEFAULT_ZOOM);
-    marker.setPosition(DEFAULT_CENTER);
-    setMarkerPosition(DEFAULT_CENTER);
+
+    // Cancel any pending preview and restore "confirmed" state to homePosition.
+    pendingGeocodePositionRef.current = null;
+    setHasPendingGeocode(false);
+    setPendingGeocodePosition(null);
+    confirmedGeocodePositionRef.current = homePosition;
+    if (confirmedMarkerRef.current) {
+      confirmedMarkerRef.current.setVisible(false);
+      confirmedMarkerRef.current.setPosition(homePosition);
+    }
+
+    // Fit map to boundary for the selected state.
+    // Important: don't force DEFAULT_ZOOM after fitBounds, otherwise it zooms out
+    // and you end up seeing the whole India again.
+    let didFitBounds = false;
+    if (indiaBoundary) {
+      const bounds = computeLatLngBoundsFromGeoJson(indiaBoundary);
+      if (bounds) {
+        const g: any = (window as any).google;
+        if (g?.maps?.LatLngBounds) {
+          const latLngBounds = new g.maps.LatLngBounds(
+            new g.maps.LatLng(bounds.minLat, bounds.minLng),
+            new g.maps.LatLng(bounds.maxLat, bounds.maxLng),
+          );
+          map.fitBounds(latLngBounds);
+          didFitBounds = true;
+        } else {
+          map.panTo(homePosition);
+        }
+      } else {
+        map.panTo(homePosition);
+      }
+    } else {
+      map.panTo(homePosition);
+    }
+
+    if (!didFitBounds) {
+      map.setZoom(DEFAULT_ZOOM);
+    }
+    marker.setPosition(homePosition);
+    setMarkerPosition(homePosition);
     setInteractionError(null);
+
+    // Ensure the address corresponds to the home view.
+    try {
+      if (indiaBoundary && !isWithinIndia(homePosition, indiaBoundary)) return;
+      const parsed = await reverseGeocodeAtPosition(homePosition);
+      setGeocodeData(parsed);
+    } catch (err: any) {
+      setGeocodeData(null);
+      setInteractionError(err?.message || "Reverse geocoding failed.");
+    }
   };
 
   const zoomIn = () => {
@@ -615,117 +926,11 @@ export default function App() {
     setSuggestions([]);
   };
 
-  const handleLocateUser = async () => {
-    setIsLocating(true);
-    setInteractionError(null);
-    try {
-      const coords = await getCurrentLocation();
-      if (!isWithinIndia(coords, indiaBoundary)) {
-        setInteractionError("Current location is outside India.");
-        return;
-      }
-
-      const map = mapInstanceRef.current;
-      const marker = markerRef.current;
-      if (map && marker) {
-        const g = (window as any).google;
-        const targetZoom = await getMaxAllowedZoom(g, coords);
-        map.panTo(coords);
-        map.setCenter(coords);
-        map.setZoom(targetZoom);
-        marker.setPosition(coords);
-      }
-      setMarkerPosition(coords);
-    } catch (err: any) {
-      setInteractionError(err.message || "Failed to get current location.");
-    } finally {
-      setIsLocating(false);
-    }
-  };
-
-  const renderDataRow = (label: string, value: string | null | undefined) => (
-    <div className="data-row">
-      <span className="data-key">{label}</span>
-      <span className={`data-value${!value ? " empty" : ""}`}>
-        {value || "—"}
-      </span>
-    </div>
-  );
-
   return (
     <main className="app-shell">
-      <header className="header" id="app-header">
-        <div className="header-brand">
-          <div className="brand-icon">
-            <IconMapPin />
-          </div>
-          <span className="brand-title">Geocoding Marker</span>
-        </div>
-
-        <div className="header-right">
-          <div className="search-container" id="search-container">
-            <span className="search-icon">
-              <IconSearch />
-            </span>
-            <input
-              id="search-input"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search by address, locality, POI, or pincode..."
-              className="search-field"
-              autoComplete="off"
-            />
-            {searchInput && (
-              <button
-                className="search-clear-btn"
-                onClick={handleClearSearch}
-                title="Clear search">
-                <IconX />
-              </button>
-            )}
-            {isSearching && <div className="search-spinner" />}
-            {suggestions.length > 0 && (
-              <div className="suggestions-dropdown" id="suggestions-list">
-                <ul>
-                  {suggestions.map((s) => (
-                    <li
-                      key={`${s.placeId ?? s.content}-${s.coordinates?.lat ?? ""}-${s.coordinates?.lng ?? ""}`}>
-                      <button
-                        type="button"
-                        className="suggestion-btn"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => handleSuggestionSelect(s)}>
-                        <span className="title">{s.title}</span>
-                        <span className="subtitle">{s.content}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-
-          <button
-            className={`locate-btn ${isLocating ? "loading" : ""}`}
-            onClick={handleLocateUser}
-            title="Current location">
-            <IconLocate />
-          </button>
-        </div>
-
-        {/* <div className="header-status">
-          <div
-            className={`security-badge ${isHttps ? "secure" : "insecure"}`}
-            id="security-badge">
-            {isHttps ? <IconLock /> : <IconUnlock />}
-            <span>{isHttps ? "HTTPS Secured" : "Not HTTPS"}</span>
-          </div>
-        </div> */}
-      </header>
-
       {interactionError && (
         <div
-          className="toast toast-warn"
+          className="toast toast-error"
           id="interaction-error-toast"
           role="status"
           aria-live="polite">
@@ -738,84 +943,37 @@ export default function App() {
         </div>
       )}
 
+      <StateMandatoryModal open={isStateMandatoryModalOpen} />
+
       <div className="content">
         <div className="map-column">
           <div ref={mapRef} className="map-viewport" id="map" />
-          <div className="map-controls" id="map-controls">
-            <button
-              type="button"
-              className="map-btn"
-              onClick={zoomIn}
-              title="Zoom in"
-              id="btn-zoom-in">
-              <IconZoomIn />
-            </button>
-            <button
-              type="button"
-              className="map-btn"
-              onClick={zoomOut}
-              title="Zoom out"
-              id="btn-zoom-out">
-              <IconZoomOut />
-            </button>
-            {/* <div className="map-controls-divider" /> */}
-            <button
-              type="button"
-              className="map-btn"
-              onClick={resetHome}
-              title="Reset to home"
-              id="btn-home">
-              <IconHome />
-            </button>
-          </div>
+          <FloatingSearchPanel
+            searchInput={searchInput}
+            onSearchInputChange={setSearchInput}
+            onClearSearch={handleClearSearch}
+            isSearching={isSearching}
+            suggestions={suggestions}
+            onSuggestionSelect={handleSuggestionSelect}
+          />
+
+          <CrosshairOverlay isActive={isMapInteracting} />
+
+          <MapControlsPanel
+            onZoomIn={zoomIn}
+            onZoomOut={zoomOut}
+            onHome={() => void resetHome()}
+          />
+
+          <FloatingAddressPanel
+            geocodeData={geocodeData}
+            isGeocoding={isGeocoding}
+            hasPendingGeocode={hasPendingGeocode}
+            interactionError={interactionError}
+            onConfirm={() => void handleConfirmGeocode()}
+            onCancel={handleCancelGeocode}
+          />
         </div>
-
-        <aside className="side-panel" id="side-panel">
-          <div className="panel-section">
-            <div className="panel-section-header">
-              <IconMapPin />
-              <span className="panel-section-title">Marker Position</span>
-            </div>
-            <div className="coord-grid">
-              <div className="coord-card" id="lat-card">
-                <div className="coord-label">Latitude</div>
-                <div className="coord-value">
-                  {formatCoordinate(markerPosition.lat)}
-                </div>
-              </div>
-              <div className="coord-card" id="lng-card">
-                <div className="coord-label">Longitude</div>
-                <div className="coord-value">
-                  {formatCoordinate(markerPosition.lng)}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="panel-section">
-            <div className="panel-section-header">
-              <IconGlobe />
-              <span className="panel-section-title">Geocoding</span>
-            </div>
-            <div className="status-row" style={{ marginBottom: 12 }}>
-              <span
-                className={`status-pill ${isGeocoding ? "loading" : "ready"}`}>
-                <span
-                  className={`status-dot ${isGeocoding ? "loading" : "ready"}`}
-                />
-                {isGeocoding ? "Resolving..." : "Ready"}
-              </span>
-            </div>
-            <div className="data-rows" id="geocode-data">
-              {renderDataRow("Pincode", geocodeData?.pincode)}
-              {renderDataRow("State", geocodeData?.state)}
-              {renderDataRow("City", geocodeData?.city)}
-              {renderDataRow("District", geocodeData?.district)}
-              {renderDataRow("Tehsil", geocodeData?.tehsil)}
-              {renderDataRow("Address", geocodeData?.formattedAddress)}
-            </div>
-          </div>
-        </aside>
       </div>
     </main>
   );

@@ -4,6 +4,13 @@ export type PlaceSuggestion = {
   placeId?: string;
 };
 
+export type PlaceSearchBounds = {
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+};
+
 export type PlaceDetails = {
   place_id: string;
   name: string;
@@ -51,17 +58,35 @@ type PlacesDetailResponse = {
 export async function searchFromGooglePlaces(
   query: string,
   apiKey: string,
+  bounds?: PlaceSearchBounds | null,
 ): Promise<PlaceSuggestion[]> {
+  const requestBody: Record<string, unknown> = {
+    input: query,
+    includedRegionCodes: ["IN"],
+  };
+
+  if (bounds) {
+    requestBody.locationRestriction = {
+      rectangle: {
+        low: {
+          latitude: bounds.minLat,
+          longitude: bounds.minLng,
+        },
+        high: {
+          latitude: bounds.maxLat,
+          longitude: bounds.maxLng,
+        },
+      },
+    };
+  }
+
   const response = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": apiKey,
     },
-    body: JSON.stringify({
-      input: query,
-      includedRegionCodes: ["IN"],
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {

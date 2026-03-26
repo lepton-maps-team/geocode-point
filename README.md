@@ -1,4 +1,4 @@
-# Geocoding Marker
+# GeoPin India
 
 - Satellite-only Google map
 - Places API autocomplete

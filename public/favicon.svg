@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="GeoPin India">
+  <defs>
+    <linearGradient id="bg" x1="90" y1="70" x2="420" y2="450" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App background -->
+  <rect x="64" y="64" width="384" height="384" rx="96" fill="url(#bg)"/>
+
+  <!-- Map pin -->
+  <path
+    d="M256 24C165.6 24 92 97.6 92 188c0 126.8 164 300 164 300s164-173.2 164-300c0-90.4-73.6-164-164-164z"
+    fill="#FFFFFF"
+  />
+
+  <!-- Magnifier (geocoding) -->
+  <circle cx="256" cy="190" r="78" fill="none" stroke="#4f46e5" stroke-width="26"/>
+  <path d="M312 246L410 344" fill="none" stroke="#4f46e5" stroke-width="26" stroke-linecap="round"/>
+
+  <!-- Inner marker dot -->
+  <circle cx="256" cy="190" r="20" fill="#4f46e5"/>
+</svg>

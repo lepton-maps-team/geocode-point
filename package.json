@@ -1,11 +1,12 @@
 {
-  "name": "geocoding-marker",
+  "name": "geopin-india",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "split:states": "node scripts/split-indian-states.mjs",
+    "dev": "npm run split:states && vite",
+    "build": "npm run split:states && tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit"
   },
