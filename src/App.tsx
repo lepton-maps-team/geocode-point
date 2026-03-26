@@ -37,6 +37,7 @@ const COORDINATE_REGEX = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/;
 const STATE_BOUNDARY_DIR_URL = "/states/";
 const HOME_GEOCODE_CACHE_KEY = "geocoding-marker:home-geocode:v1";
 const HOME_GEOCODE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const STATE_BOUNDARY_CACHE_KEY_PREFIX = "state-boundary-cache:v1:";
 
 function getStateNameFromUrl(): string | null {
   if (typeof window === "undefined") return null;
@@ -227,6 +228,36 @@ function writeHomeGeocodeCache(data: ParsedGeocode) {
   }
 }
 
+function readStateBoundaryCache(
+  stateSlug: string,
+): IndiaBoundaryFeatureCollection | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(
+      `${STATE_BOUNDARY_CACHE_KEY_PREFIX}${stateSlug}`,
+    );
+    if (!raw) return null;
+    return JSON.parse(raw) as IndiaBoundaryFeatureCollection;
+  } catch {
+    return null;
+  }
+}
+
+function writeStateBoundaryCache(
+  stateSlug: string,
+  boundary: IndiaBoundaryFeatureCollection,
+) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(
+      `${STATE_BOUNDARY_CACHE_KEY_PREFIX}${stateSlug}`,
+      JSON.stringify(boundary),
+    );
+  } catch {
+    // Ignore cache write failures (quota/private mode).
+  }
+}
+
 function getMaxAllowedZoom(
   g: any,
   position: Coordinates,
@@ -284,6 +315,7 @@ export default function App() {
   const [isStateMandatoryModalOpen, setIsStateMandatoryModalOpen] = useState(
     false,
   );
+  const [isStateBoundaryLoading, setIsStateBoundaryLoading] = useState(false);
 
   const debouncedSearchInput = useDebouncedValue(searchInput, 350);
 
@@ -296,6 +328,7 @@ export default function App() {
 
       // state_name is mandatory: show dialog when missing.
       if (!stateName) {
+        setIsStateBoundaryLoading(false);
         setBoundaryLabel("state");
         setIndiaBoundary(null);
         setHomePosition(DEFAULT_CENTER);
@@ -308,6 +341,38 @@ export default function App() {
       const stateUrl = `${STATE_BOUNDARY_DIR_URL}${encodeURIComponent(
         stateSlug,
       )}.geojson`;
+
+      setIsStateBoundaryLoading(true);
+      setIsStateMandatoryModalOpen(false);
+
+      // Hint the browser to fetch this early for iframe scenarios.
+      if (typeof document !== "undefined") {
+        const prefetch = document.createElement("link");
+        prefetch.rel = "prefetch";
+        prefetch.as = "fetch";
+        prefetch.href = stateUrl;
+        document.head.appendChild(prefetch);
+      }
+
+      const cachedBoundary = readStateBoundaryCache(stateSlug);
+      if (cachedBoundary?.features?.length) {
+        const features = cachedBoundary.features as IndiaBoundaryFeature[];
+        const firstName =
+          (features[0].properties as any)?.name || stateNameRaw || "state";
+        setBoundaryLabel(firstName);
+        setIndiaBoundary(cachedBoundary);
+        const bounds = computeLatLngBoundsFromGeoJson(cachedBoundary);
+        if (bounds) {
+          setHomePosition({
+            lat: (bounds.minLat + bounds.maxLat) / 2,
+            lng: (bounds.minLng + bounds.maxLng) / 2,
+          });
+        } else {
+          setHomePosition(DEFAULT_CENTER);
+        }
+        setIsStateBoundaryLoading(false);
+        return;
+      }
 
       try {
         const response = await fetch(stateUrl);
@@ -327,15 +392,14 @@ export default function App() {
         const firstName =
           (features[0].properties as any)?.name || stateNameRaw || "state";
         setBoundaryLabel(firstName);
-        setIndiaBoundary({
+        const boundary: IndiaBoundaryFeatureCollection = {
           type: "FeatureCollection",
           features,
-        });
+        };
+        setIndiaBoundary(boundary);
+        writeStateBoundaryCache(stateSlug, boundary);
 
-        const bounds = computeLatLngBoundsFromGeoJson({
-          type: "FeatureCollection",
-          features,
-        });
+        const bounds = computeLatLngBoundsFromGeoJson(boundary);
         if (bounds) {
           setHomePosition({
             lat: (bounds.minLat + bounds.maxLat) / 2,
@@ -349,6 +413,9 @@ export default function App() {
         setBoundaryLabel(stateNameRaw || "state");
         setIndiaBoundary(null);
         setIsStateMandatoryModalOpen(true);
+      } finally {
+        if (!isMounted) return;
+        setIsStateBoundaryLoading(false);
       }
     };
 
@@ -932,7 +999,10 @@ export default function App() {
         </div>
       )}
 
-      <StateMandatoryModal open={isStateMandatoryModalOpen} />
+      <StateMandatoryModal
+        open={isStateMandatoryModalOpen || isStateBoundaryLoading}
+        isLoading={isStateBoundaryLoading}
+      />
 
       <div className="content">
         <div className="map-column">
